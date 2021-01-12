@@ -1,0 +1,152 @@
+---
+title: "Banknote Authentication Data Set"
+author: "Gabriel Teotonio"
+date: "1/11/2021"
+output:   
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_deth: 2
+---
+
+# Packages
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+```{r libs}
+library(readr) # read data
+library(kableExtra) # plot html tables
+library(patchwork) # to gather ggplot objects
+library(ggcorrplot) # correlation plots
+library(devtools)
+#install_github("tidymodels/tidymodels")
+library(tidymodels) # tidymodels and stack
+```
+
+
+
+# Introduction
+Data were extracted from images that were taken from genuine and forged banknote-like specimens. For digitization, an industrial camera usually used for print inspection was used. The final images have 400x 400 pixels. Due to the object lens and distance to the investigated object gray-scale pictures with a resolution of about 660 dpi were gained. Wavelet Transform tool were used to extract features from images.  
+We have the following variables in our data set:  
+
+- Variance of Wavelet Transformed image (continuous)  
+- Skewness of Wavelet Transformed image (continuous)  
+- Curtosis of Wavelet Transformed image (continuous)  
+- Entropy of image (continuous)  
+- class (discrete)  
+
+# Data  
+Let's load the data in the `.txt`file. This file can be downloaded at <https://archive.ics.uci.edu/ml/datasets/banknote+authentication#>. We can see a few observations of ou data set below. As mentioned previously, it has four continuous variables and a discrete one. Our goal here is to proceed with a classification about the discrete variable. That indicator variable corresponds to the authenticity of a banknote, where 0 means a real/authentic banknote, and 1 means a fake/fraud banknote.
+
+```{r load}
+data <- read_csv("data/data_banknote_authentication.txt", col_names = FALSE) %>% 
+  rename("variance" = X1, "skewness" = X2, "curtosis" = X3, "entropy" = X4, "class" = X5) %>% 
+  mutate(class = factor(class, levels = c(0, 1), labels = c("real", "fake")))
+
+data %>% 
+  head() %>% 
+  kbl() %>%
+  kable_styling()
+```
+
+To understand a bit more about the data, consider the following plot. Here we have the empirical probability density functions. As we intend to classify the observations as fraud or not, understand whether there is any variable with a intrinsic pattern to the levels of the class variable. It seems that only the `skewness` and `variance` variables show a difference distribution when grouped the `class`.
+
+```{r density}
+p <- ggplot(data,
+            aes(x = variance,
+                fill = class)) + 
+  geom_density(alpha = .6)
+
+q <- ggplot(data,
+            aes(x = skewness,
+                fill = class)) + 
+  geom_density(alpha = .6)
+
+r <- ggplot(data,
+            aes(x = curtosis,
+                fill = class)) + 
+  geom_density(alpha = .6)
+
+s <- ggplot(data,
+            aes(x = entropy,
+                fill = class)) + 
+  geom_density(alpha = .6)
+
+(p + q) / (r + s)
+```
+
+We also have a correlation plot to observe the possible existency of multicollinearity.
+
+```{r corr}
+ggcorrplot(round(cor(data[,-5]), 1),
+           hc.order = TRUE,
+           type = "lower",
+           outline.color = "white",
+           lab = TRUE)
+```
+
+Another important aspect is the proportion of each level of the `class`variable in our data.
+
+```{r prop_class}
+data %>% 
+  count(class) %>% 
+  mutate(prop = n/sum(n)) %>% 
+  kbl() %>% 
+  kable_styling(full_width = FALSE)
+```
+
+# Models
+A few model are considered to the task of classification banknotes. 
+## Data splitting
+Let's split our data in two sets: training and test. The first one is used when fitting the model parameters. The second one will help to measure the performance of our fitted model.
+
+```{r split_data}
+set.seed(1987)
+data_split <- initial_split(data, prop = 3/4)
+
+train_data <- training(data_split)
+test_data <- testing(data_split)
+```
+
+
+### Logistic Regression
+
+```{r recipe}
+banknotes <- 
+  recipe(class ~ ., data = train_data) %>% 
+  step_normalize(all_predictors())
+summary(banknotes)
+```
+
+```{r log_simple}
+lr_model <- 
+  logistic_reg() %>% 
+  set_engine("glm")
+
+banknotes_wflow <-
+  workflow() %>% 
+  add_model(lr_model) %>% 
+  add_recipe(banknotes)
+
+lr_fit <- 
+  banknotes_wflow %>% 
+  fit(data = train_data)
+
+lr_fit %>% 
+  pull_workflow_fit() %>% 
+  tidy() %>% 
+  kbl() %>% 
+  kable_styling(full_width = FALSE)
+```
+
+```{r log_ple_predict}
+lr_pred <-
+  predict(lr_fit, test_data, type = "prob") %>% 
+  bind_cols(test_data %>% select(class))
+```
+
+
