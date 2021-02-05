@@ -123,7 +123,9 @@ vkfcm_k_lp <- function(x, c = 2, m = 1.1, T_limit = 150, error_cond = 10^(-10)) 
     
   }
   
-  return(list("J_objective" = J,
+  return(list("initials"= initials_kick,
+              "fuzziness_param" = m,
+              "J_objective" = J,
               "Prototype" = V,
               "Weight" = L,
               "Membership" = U
