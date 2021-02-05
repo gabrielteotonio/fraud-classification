@@ -25,6 +25,9 @@ library(ggcorrplot) # correlation plots
 library(devtools)
 #install_github("tidymodels/tidymodels")
 library(tidymodels) # tidymodels and stack
+library(discrim)
+library(naivebayes)
+library(kknn)
 ```
 
 
@@ -101,26 +104,166 @@ data %>%
 
 # Models
 A few model are considered to the task of classification banknotes. 
-## Data splitting
+
+## Data splitting  
 Let's split our data in two sets: training and test. The first one is used when fitting the model parameters. The second one will help to measure the performance of our fitted model.
 
 ```{r split_data}
 set.seed(1987)
 data_split <- initial_split(data, prop = 3/4)
 
-train_data <- training(data_split)
-test_data <- testing(data_split)
+normalize <- function(x) {
+    return ((x - min(x)) / (max(x) - min(x)))
+}
+
+train_data <- 
+  training(data_split) %>% 
+  mutate_at(c("variance", "skewness", "curtosis", "entropy"), 
+                                                 ~normalize(.))
+test_data <- 
+  testing(data_split) %>% 
+  mutate_at(c("variance", "skewness", "curtosis", "entropy"), 
+                                                 ~normalize(.))
 ```
 
+### KNN
+```{r cross_knn}
+banknotes_knn <- 
+  recipe(class ~ ., data = train_data)
+
+knn_cv <- vfold_cv(train_data, v = 10, strata = "class")
+
+knn_model <- 
+  nearest_neighbor() %>% 
+  set_args(neighbors = tune(), weight_func = "gaussian", dist_power = 2) %>% 
+  set_engine("kknn") %>% 
+  set_mode("classification")
+
+banknotes_wflow_knn <-
+  workflow() %>% 
+  add_model(knn_model) %>% 
+  add_recipe(banknotes_knn)
+
+knn_grid <- expand.grid(neighbors = seq(1,50,1))
+
+knn_tune_results <- banknotes_wflow_knn %>% 
+  tune_grid(resamples = knn_cv,
+            grid = knn_grid,
+            metrics = metric_set(accuracy, roc_auc),
+            control   = control_grid(verbose = TRUE))
+
+param_final_knn <- 
+  knn_tune_results %>% 
+  select_best(metric = "roc_auc")
+param_final_knn
+
+banknotes_wflow_knn <- 
+  banknotes_wflow_knn %>% 
+  finalize_workflow(param_final_knn)
+banknotes_wflow_knn
+
+knn_fit <- 
+  banknotes_wflow_knn %>% 
+  fit(data = train_data)
+
+knn_fit %>% 
+  pull_workflow_fit()
+  
+knn_pred <-
+  predict(knn_fit, test_data) %>% 
+  bind_cols(test_data %>% select(class))
+
+knn_pred %>% 
+  metrics(class, .pred_class) %>%
+  select(-.estimator) %>%
+  filter(.metric == "accuracy") 
+
+tibble(
+  "precision" = 
+     precision(knn_pred, class, .pred_class) %>%
+     select(.estimate),
+  "recall" = 
+     recall(knn_pred, class, .pred_class) %>%
+     select(.estimate)
+) %>%
+  unnest() %>%
+  kable()
+
+knn_pred %>%
+  f_meas(class, .pred_class) %>%
+  select(-.estimator) %>%
+  kable()
+```
+
+### Naive Bayes
+```{r recipe_bayes}
+banknotes <- 
+  recipe(class ~ ., data = train_data)
+
+bayes_model <- 
+  naive_Bayes() %>% 
+  set_mode("classification") %>% 
+  set_engine("klaR")
+
+banknotes_wflow <-
+  workflow() %>% 
+  add_model(bayes_model) %>% 
+  add_recipe(banknotes)
+
+bayes_fit <- 
+  banknotes_wflow %>% 
+  fit(data = train_data)
+
+```
+
+```{r bayes_predict}
+bayes_pred <-
+  predict(bayes_fit, test_data) %>% 
+  bind_cols(test_data %>% select(class))
+
+bayes_pred %>% 
+  metrics(class, .pred_class) %>%
+  select(-.estimator) %>%
+  filter(.metric == "accuracy") 
+
+tibble(
+  "precision" = 
+     precision(bayes_pred, class, .pred_class) %>%
+     select(.estimate),
+  "recall" = 
+     recall(bayes_pred, class, .pred_class) %>%
+     select(.estimate)) %>%
+  unnest() %>%
+  kable()
+
+bayes_pred %>%
+  f_meas(class, .pred_class) %>%
+  select(-.estimator) %>%
+  kable()
+```
+
+```{r roc_curve_bayes}
+bayes_pred %>% 
+  roc_curve(truth = class, .pred_real) %>% 
+  autoplot()
+```
+```{r roc_auc_bayes}
+bayes_pred %>% 
+  roc_auc(truth = class, .pred_real)
+```
 
 ### Logistic Regression
+Below we create the recipe for our model and normalize all the variables used to classify the `class` variable.
 
 ```{r recipe}
 banknotes <- 
-  recipe(class ~ ., data = train_data) %>% 
-  step_normalize(all_predictors())
+  recipe(class ~ ., data = train_data) #%>% 
+  #step_normalize(all_predictors())
+
 summary(banknotes)
 ```
+
+Now it's time to define a model and create a workflow putting together the recipe and model definition.
 
 ```{r log_simple}
 lr_model <- 
@@ -143,10 +286,167 @@ lr_fit %>%
   kable_styling(full_width = FALSE)
 ```
 
+Above we can see the estimates for the parameters considered in our model. Note that standard error of our estimates are quite great that we desired. This can be a signal for overfitting in our model.
+
 ```{r log_ple_predict}
 lr_pred <-
-  predict(lr_fit, test_data, type = "prob") %>% 
+  predict(lr_fit, test_data) %>% 
   bind_cols(test_data %>% select(class))
+
+lr_pred %>% 
+  metrics(class, .pred_class) %>%
+  select(-.estimator) %>%
+  filter(.metric == "accuracy") 
+
+tibble(
+  "precision" = 
+     precision(lr_pred, class, .pred_class) %>%
+     select(.estimate),
+  "recall" = 
+     recall(lr_pred, class, .pred_class) %>%
+     select(.estimate)) %>%
+  unnest() %>%
+  kable()
+
+lr_pred %>%
+  f_meas(class, .pred_class) %>%
+  select(-.estimator) %>%
+  kable()
+```
+
+```{r roc_curve}
+lr_pred %>% 
+  roc_curve(truth = class, .pred_real) %>% 
+  autoplot()
 ```
 
 
+```{r roc_auc}
+lr_pred %>% 
+  roc_auc(truth = class, .pred_real)
+```
+
+
+### Logistic Regression with Regularization  
+As we saw, our simple logistic model is overfitted. Trying to solve this problem, we are going to use regularization. Also let's add some new variables created from the original ones.  
+
+```{r recipe_reg}
+train_data <-
+  train_data %>% 
+  mutate(variance_square = variance^2,
+         skewness_root = sqrt(skewness),
+         curtosis_log = log(curtosis),
+         entropy_inv = 1/entropy) %>% 
+  filter(!is.infinite(entropy_inv), !is.infinite(curtosis_log))
+
+test_data <-
+  test_data %>% 
+  mutate(variance_square = variance^2,
+         skewness_root = sqrt(skewness),
+         curtosis_log = log(curtosis),
+         entropy_inv = 1/entropy) %>% 
+  filter(!is.infinite(entropy_inv), !is.infinite(curtosis_log))
+
+banknotes_reg <- 
+  recipe(class ~ ., data = train_data) #%>% 
+  # step_range(all_predictors(), min = 0, max = 1) %>% 
+  # step_mutate(variance_square = variance^2,
+  #             skewness_root = sqrt(skewness),
+  #             curtosis_log = log(curtosis),
+  #             entropy_inv = 1/entropy) %>% 
+  # step_filter(!is.infinite(curtosis_log),!is.na(curtosis_log), !is.nan((curtosis_log)),
+  #             !is.infinite(skewness_root),!is.na(skewness_root), !is.nan((skewness_root)))
+  
+summary(banknotes_reg)
+```
+
+There is also the definition of stratified cross validation for our model due the insertion of a hyperparameter for the regularization.  
+
+```{r cross_reg}
+#l_cv <- vfold_cv(train_data, v = 10, strata = "class")
+
+lr_model_reg <- 
+  logistic_reg() %>% 
+  set_args(penalty = 0, mixture = 0) %>% 
+  set_engine("glmnet") %>% 
+  set_mode("classification")
+
+banknotes_wflow_reg <-
+  workflow() %>% 
+  add_model(lr_model_reg) %>% 
+  add_recipe(banknotes_reg)
+
+#lr_grid <- expand.grid(penalty = seq(0,10,0.01))
+
+# lr_tune_results <- banknotes_wflow_reg %>% 
+#   tune_grid(resamples = knn_cv,
+#             grid = lr_grid,
+#             metrics = metric_set(accuracy, roc_auc),
+#             control   = control_grid(verbose = TRUE))
+
+```
+
+
+```{r cross_results}
+lr_tune_results %>% 
+  collect_metrics()
+```
+```{r}
+param_final <- 
+  lr_tune_results %>% 
+  select_best(metric = "roc_auc")
+param_final
+
+banknotes_wflow_reg <- 
+  banknotes_wflow_reg %>% 
+  finalize_workflow(param_final)
+banknotes_wflow_reg
+```
+
+```{r fite_reg}
+lr_fit_reg <- 
+  banknotes_wflow_reg %>% 
+  fit(data = train_data)
+
+lr_fit_reg %>% 
+  pull_workflow_fit() %>% 
+  tidy() %>% 
+  kbl() %>% 
+  kable_styling(full_width = FALSE)
+```
+
+```{r log_reg_predict}
+lr_pred_reg <-
+  predict(lr_fit_reg, test_data) %>% 
+  bind_cols(test_data %>% select(class))
+
+lr_pred_reg %>% 
+  metrics(class, .pred_class) %>%
+  select(-.estimator) %>%
+  filter(.metric == "accuracy") 
+
+tibble(
+  "precision" = 
+     precision(lr_pred_reg, class, .pred_class) %>%
+     select(.estimate),
+  "recall" = 
+     recall(lr_pred_reg, class, .pred_class) %>%
+     select(.estimate)) %>%
+  unnest() %>%
+  kable()
+
+lr_pred_reg %>%
+  f_meas(class, .pred_class) %>%
+  select(-.estimator) %>%
+  kable()
+```
+
+```{r roc_curve_reg}
+lr_pred_reg %>% 
+  roc_curve(truth = class, .pred_real) %>% 
+  autoplot()
+```
+```{r roc_auc_reg}
+lr_pred_reg %>% 
+  roc_auc(truth = class, .pred_real)
+```
